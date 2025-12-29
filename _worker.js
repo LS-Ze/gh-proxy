@@ -24,7 +24,7 @@ async function loadGhProxySafely(env) {
     };
     
     // 2. 获取原gh-proxy代码
-    const response = await fetch('https://cdn.jsdelivr.net/gh/LS-Ze/gh-proxy@master/index.js');
+    const response = await fetch('./index.js');
     let code = await response.text();
     
     // 3. 修改代码以支持环境变量
