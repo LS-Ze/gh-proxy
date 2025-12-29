@@ -1,5 +1,5 @@
 // Cloudflare Pages Functions for gh-proxy
-// 动态远程加载版本 - 完整解决方案
+// 增强版 - 更健壮的代码分析
 
 // 配置
 const CONFIG = {
@@ -60,11 +60,14 @@ async function initializeGhProxy(env) {
     console.log('Fetching remote JS:', CONFIG.REMOTE_JS_URL);
     const jsCode = await fetchRemoteJS(CONFIG.REMOTE_JS_URL);
     
-    // 3. 转换代码为ES模块
+    // 3. 增强日志：显示获取的代码前200字符
+    console.log('Fetched JS code preview:', jsCode.substring(0, 200) + '...');
+    
+    // 4. 转换代码为ES模块
     console.log('Transforming code to ES module...');
     const moduleCode = transformToESModule(jsCode, config);
     
-    // 4. 创建并加载模块
+    // 5. 创建并加载模块
     console.log('Creating and loading module...');
     ghProxyModule = await createAndLoadModule(moduleCode);
     
@@ -112,46 +115,113 @@ async function fetchRemoteJS(url) {
   return await response.text();
 }
 
-// 将CommonJS代码转换为ES模块
+// 将CommonJS代码转换为ES模块 - 增强版
 function transformToESModule(jsCode, config) {
-  // 1. 替换配置变量
+  try {
+    // 1. 替换配置变量
+    jsCode = replaceConfigVariables(jsCode, config);
+    
+    // 2. 增强版：查找fetch处理函数的多种方式
+    let fetchHandlerCode = extractFetchHandler(jsCode);
+    
+    if (!fetchHandlerCode) {
+      // 尝试直接查找fetchHandler函数定义
+      const fetchHandlerFunc = jsCode.match(/async function fetchHandler\([\s\S]*?\)\s*\{[\s\S]*?\}/);
+      if (fetchHandlerFunc) {
+        fetchHandlerCode = fetchHandlerFunc[0];
+        console.log('Found fetchHandler function definition');
+      }
+    }
+    
+    if (!fetchHandlerCode) {
+      // 最后尝试：如果没有找到现有的fetchHandler，创建一个简单的包装器
+      console.log('Creating wrapper fetchHandler');
+      fetchHandlerCode = `async function fetchHandler(event) {
+        return fetchHandler(event);
+      }`;
+    }
+    
+    // 3. 添加ES模块导出
+    jsCode += `\n\n${fetchHandlerCode}\nexport { fetchHandler };`;
+    
+    console.log('Successfully transformed code to ES module');
+    return jsCode;
+    
+  } catch (error) {
+    console.error('Code transformation failed:', error);
+    throw error;
+  }
+}
+
+// 替换配置变量
+function replaceConfigVariables(jsCode, config) {
+  // 替换ASSET_URL
   jsCode = jsCode.replace(
     /const ASSET_URL = 'https?:\/\/[^']+'/,
     `const ASSET_URL = '${config.ASSET_URL}'`
   );
   
+  // 替换PREFIX
   jsCode = jsCode.replace(
     /const PREFIX = '\/'/,
     `const PREFIX = '${config.PREFIX}'`
   );
   
+  // 替换Config
   jsCode = jsCode.replace(
     /const Config = {\s*jsdelivr: \d\s*}/,
     `const Config = { jsdelivr: ${config.Config.jsdelivr} }`
   );
   
+  // 替换whiteList
   jsCode = jsCode.replace(
     /const whiteList = \[\s*\]/,
     `const whiteList = ${JSON.stringify(config.whiteList)}`
   );
   
-  // 2. 提取fetchHandler函数
-  // 查找addEventListener('fetch', ...)调用
-  const fetchHandlerMatch = jsCode.match(
-    /addEventListener\('fetch',\s*function\s*\(\w+\)\s*\{\s*([\s\S]*?)\s*\}\s*\)/
-  );
+  return jsCode;
+}
+
+// 提取fetch处理函数 - 增强版
+function extractFetchHandler(jsCode) {
+  // 模式1: addEventListener('fetch', function(e) { ... })
+  const pattern1 = /addEventListener\('fetch',\s*function\s*\(\w+\)\s*\{\s*([\s\S]*?)\s*\}\s*\)/;
+  const match1 = jsCode.match(pattern1);
   
-  if (fetchHandlerMatch && fetchHandlerMatch[1]) {
-    // 提取函数体
-    const fetchHandlerBody = fetchHandlerMatch[1];
-    
-    // 添加ES模块导出
-    jsCode += `\n\nexport async function fetchHandler(event) {\n${fetchHandlerBody}\n}`;
-  } else {
-    throw new Error('Could not find fetch handler in JS code');
+  if (match1 && match1[1]) {
+    console.log('Found fetch handler pattern 1');
+    return `async function fetchHandler(event) {\n${match1[1]}\n}`;
   }
   
-  return jsCode;
+  // 模式2: addEventListener('fetch', e => { ... })
+  const pattern2 = /addEventListener\('fetch',\s*\w+\s*=>\s*\{\s*([\s\S]*?)\s*\}\s*\)/;
+  const match2 = jsCode.match(pattern2);
+  
+  if (match2 && match2[1]) {
+    console.log('Found fetch handler pattern 2');
+    return `async function fetchHandler(event) {\n${match2[1]}\n}`;
+  }
+  
+  // 模式3: addEventListener('fetch', (e) => { ... })
+  const pattern3 = /addEventListener\('fetch',\s*\(\w+\)\s*=>\s*\{\s*([\s\S]*?)\s*\}\s*\)/;
+  const match3 = jsCode.match(pattern3);
+  
+  if (match3 && match3[1]) {
+    console.log('Found fetch handler pattern 3');
+    return `async function fetchHandler(event) {\n${match3[1]}\n}`;
+  }
+  
+  // 模式4: addEventListener("fetch", ...) (使用双引号)
+  const pattern4 = /addEventListener\("fetch",\s*function\s*\(\w+\)\s*\{\s*([\s\S]*?)\s*\}\s*\)/;
+  const match4 = jsCode.match(pattern4);
+  
+  if (match4 && match4[1]) {
+    console.log('Found fetch handler pattern 4');
+    return `async function fetchHandler(event) {\n${match4[1]}\n}`;
+  }
+  
+  console.log('No fetch handler pattern matched');
+  return null;
 }
 
 // 创建并加载模块
