@@ -1,158 +1,130 @@
 // Cloudflare Pages Functions for gh-proxy
-// 安全版本 - 不使用Function构造函数
+// 本地文件加载版本 - 最终版
 
-let ghProxyModule;
+// 全局配置
+let config = {
+  ASSET_URL: 'https://hunshcn.github.io/gh-proxy/',
+  PREFIX: '/',
+  Config: {
+    jsdelivr: 0
+  },
+  whiteList: []
+};
 
-// 安全加载原gh-proxy代码
-async function loadGhProxySafely(env) {
-  if (ghProxyModule) return ghProxyModule;
-  
+// 存储原gh-proxy的fetch处理函数
+let originalFetchHandler;
+
+// 加载并配置本地gh-proxy
+async function initializeGhProxy(env) {
   try {
-    // 1. 创建一个新的模块作用域
-    const moduleScope = {
-      exports: {},
-      console: console,
-      fetch: fetch,
-      Response: Response,
-      Request: Request,
-      Headers: Headers,
-      URL: URL,
-      setTimeout: setTimeout,
-      clearTimeout: clearTimeout,
-      setInterval: setInterval,
-      clearInterval: clearInterval
-    };
+    // 1. 应用环境变量
+    applyEnvironmentVariables(env);
     
-    // 2. 获取原gh-proxy代码
-    const response = await fetch('./index.js');
-    let code = await response.text();
+    // 2. 保存原始的addEventListener
+    const originalAddEventListener = globalThis.addEventListener;
     
-    // 3. 修改代码以支持环境变量
-    code = injectEnvironmentVariables(code, env);
-    
-    // 4. 添加模块导出代码
-    code += `\n\nmodule.exports = {
-      fetchHandler: fetchHandler,
-      httpHandler: httpHandler,
-      proxy: proxy,
-      makeRes: makeRes,
-      checkUrl: checkUrl,
-      newUrl: newUrl
-    };`;
-    
-    // 5. 使用安全的方式执行代码（模拟CommonJS模块）
-    const require = (id) => {
-      if (id === 'url') return { URL: URL };
-      throw new Error(`Module ${id} not found`);
-    };
-    
-    // 6. 创建函数并执行（不使用eval或Function构造函数）
-    const moduleFunction = new Function('module', 'exports', 'require', 'global', code);
-    moduleFunction(moduleScope, moduleScope.exports, require, moduleScope);
-    
-    // 7. 创建handleRequest函数
-    const handleRequest = async (request) => {
-      try {
-        // 模拟FetchEvent对象
-        const event = {
-          request: request,
-          respondWith: (responsePromise) => responsePromise
-        };
-        
-        // 调用原fetchHandler
-        return await moduleScope.exports.fetchHandler(event);
-      } catch (error) {
-        console.error('Proxy error:', error);
-        return new Response('Proxy error: ' + error.message, {
-          status: 500,
-          headers: {
-            'Content-Type': 'text/plain',
-            'Access-Control-Allow-Origin': '*'
-          }
-        });
+    // 3. 重写addEventListener以捕获fetch处理函数
+    globalThis.addEventListener = function(type, listener) {
+      if (type === 'fetch') {
+        originalFetchHandler = listener;
+        console.log('Captured fetch handler from index.js');
+      } else {
+        originalAddEventListener.call(this, type, listener);
       }
     };
     
-    ghProxyModule = {
-      handleRequest: handleRequest,
-      module: moduleScope
-    };
+    // 4. 全局替换配置变量
+    globalThis.ASSET_URL = config.ASSET_URL;
+    globalThis.PREFIX = config.PREFIX;
+    globalThis.Config = config.Config;
+    globalThis.whiteList = config.whiteList;
     
-    console.log('✅ gh-proxy loaded successfully with environment variables:');
-    logEnvironmentVariables(env);
+    // 5. 加载本地index.js
+    console.log('Loading local index.js...');
+    await import('./index.js');
     
-    return ghProxyModule;
+    // 6. 恢复原始的addEventListener
+    globalThis.addEventListener = originalAddEventListener;
+    
+    if (!originalFetchHandler) {
+      throw new Error('No fetch handler found in index.js');
+    }
+    
+    console.log('✅ gh-proxy initialized successfully');
+    return true;
     
   } catch (error) {
-    console.error('❌ Failed to load gh-proxy:', error);
-    console.error('Error stack:', error.stack);
+    console.error('❌ Failed to initialize gh-proxy:', error);
     throw error;
   }
 }
 
-// 注入环境变量到代码中
-function injectEnvironmentVariables(code, env) {
-  // 1. 替换ASSET_URL
+// 应用环境变量
+function applyEnvironmentVariables(env) {
   if (env.ASSET_URL) {
-    code = code.replace(
-      /const ASSET_URL = 'https?:\/\/[^']+'/,
-      `const ASSET_URL = '${env.ASSET_URL}'`
-    );
-    console.log(`🔧 Replaced ASSET_URL with: ${env.ASSET_URL}`);
+    config.ASSET_URL = env.ASSET_URL;
+    console.log('ASSET_URL:', config.ASSET_URL);
   }
   
-  // 2. 替换PREFIX
   if (env.PREFIX) {
-    code = code.replace(
-      /const PREFIX = '\/'/,
-      `const PREFIX = '${env.PREFIX}'`
-    );
-    console.log(`🔧 Replaced PREFIX with: ${env.PREFIX}`);
+    config.PREFIX = env.PREFIX;
+    console.log('PREFIX:', config.PREFIX);
   }
   
-  // 3. 替换Config.jsdelivr
   if (env.JSDELIVR !== undefined) {
-    code = code.replace(
-      /const Config = {\s*jsdelivr: \d\s*}/,
-      `const Config = { jsdelivr: ${env.JSDELIVR} }`
-    );
-    console.log(`🔧 Replaced Config.jsdelivr with: ${env.JSDELIVR}`);
+    config.Config.jsdelivr = parseInt(env.JSDELIVR);
+    console.log('JSDELIVR:', config.Config.jsdelivr);
   }
   
-  // 4. 替换whiteList
   if (env.WHITE_LIST) {
-    const whiteListArray = env.WHITE_LIST.split(',').map(item => `'${item.trim()}'`).join(',');
-    code = code.replace(
-      /const whiteList = \[\s*\]/,
-      `const whiteList = [${whiteListArray}]`
-    );
-    console.log(`🔧 Replaced whiteList with: [${whiteListArray}]`);
+    config.whiteList = env.WHITE_LIST.split(',').map(item => item.trim());
+    console.log('WHITE_LIST:', config.whiteList);
   }
-  
-  return code;
 }
 
-// 记录环境变量
-function logEnvironmentVariables(env) {
-  if (env.ASSET_URL) console.log(`   - ASSET_URL: ${env.ASSET_URL}`);
-  if (env.PREFIX) console.log(`   - PREFIX: ${env.PREFIX}`);
-  if (env.JSDELIVR !== undefined) console.log(`   - JSDELIVR: ${env.JSDELIVR}`);
-  if (env.WHITE_LIST) console.log(`   - WHITE_LIST: ${env.WHITE_LIST}`);
+// 处理请求
+async function handleProxyRequest(request) {
+  try {
+    if (!originalFetchHandler) {
+      throw new Error('gh-proxy not initialized');
+    }
+    
+    // 模拟FetchEvent对象
+    const event = {
+      request: request,
+      respondWith: (responsePromise) => responsePromise
+    };
+    
+    // 调用原fetch处理函数
+    return await originalFetchHandler(event);
+    
+  } catch (error) {
+    console.error('Proxy error:', error);
+    return new Response('Proxy error: ' + error.message, {
+      status: 500,
+      headers: {
+        'Content-Type': 'text/plain',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  }
 }
 
 // Pages Functions导出
 export default {
   async fetch(request, env) {
     try {
-      // 加载并初始化gh-proxy
-      const { handleRequest } = await loadGhProxySafely(env);
+      // 初始化gh-proxy（只执行一次）
+      if (!originalFetchHandler) {
+        await initializeGhProxy(env);
+      }
       
       // 处理请求
-      return await handleRequest(request);
+      return await handleProxyRequest(request);
       
     } catch (error) {
-      console.error('🚨 Fatal proxy error:', error);
-      return new Response('Fatal proxy error: ' + error.message, {
+      console.error('Fatal error:', error);
+      return new Response('Fatal error: ' + error.message, {
         status: 500,
         headers: {
           'Content-Type': 'text/plain',
